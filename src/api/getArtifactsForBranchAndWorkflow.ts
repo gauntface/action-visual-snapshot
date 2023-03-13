@@ -42,7 +42,7 @@ export async function getArtifactsForBranchAndWorkflow(
   }: GetArtifactsForBranchAndWorkflow
 ): Promise<GetArtifactsForBranchAndWorkflowReturn> {
   core.startGroup(
-    `getArtifactsForBranchAndWorkflow - workflow:"${workflow_id}",  branch:"${branch}"${
+    `getArtifactsForBranchAndWorkflow - artifactName: ${artifactName} workflow:"${workflow_id}",  branch:"${branch}"${
       commit ? `,  commit:"${commit}"` : ''
     }`
   );
@@ -54,7 +54,7 @@ export async function getArtifactsForBranchAndWorkflow(
     repo,
     // Below is typed incorrectly, it needs to be a string but typed as number
     workflow_id,
-    branch,
+    // branch,
     status: 'success',
 
     // GitHub API treats `head_sha` with explicit `undefined` value differently

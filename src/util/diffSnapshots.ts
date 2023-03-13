@@ -226,70 +226,7 @@ export async function diffSnapshots({
       }
     }
 
-    if (baseSnapshots.has(file)) {
-      const baseHead = path.resolve(basePath, file);
-      const branchHead = path.resolve(currentPath, file);
-
-      let promise;
-
-      // If merge base snapshot exists, do a 3way diff
-      if (mergeBaseSnapshots.has(file)) {
-        promise = workerPool
-          .enqueue({
-            file,
-            branchBase: path.resolve(mergeBasePath, file),
-            baseHead,
-            branchHead,
-            outputDiffPath,
-            outputMergedPath,
-            diffOptions,
-          })
-          .then(onSuccess)
-          .catch(err => {
-            if (terminationReason) {
-              core.debug(
-                `Early termination: diffing ${file} was aborted due to ${terminationReason}`
-              );
-            }
-
-            core.debug(`Error multi diffing: ${file} with ${err.message}`);
-          });
-      } else {
-        promise = workerPool
-          .enqueue({
-            file,
-            outputDiffPath,
-            baseHead,
-            branchHead,
-            diffOptions,
-          })
-          .then(onSuccess)
-          .catch(err => {
-            if (terminationReason) {
-              core.debug(
-                `Early termination: diffing ${file} was aborted due to ${terminationReason}`
-              );
-            }
-
-            core.debug(`Error diffing: ${file} with ${err.message}`);
-          });
-      }
-
-      promise.finally(() => {
-        processedFiles.add(file);
-        missingSnapshots.delete(file);
-
-        // If we have a lot of changed snapshots, there is probably a flake somewhere
-        // and diffing + uploading all of the diffs will take a very long time. We are
-        // likely not interested in all of them and subset will be enough.
-        if (changedSnapshots.size >= maxChangedSnapshots) {
-          terminationReason = 'maxChangedSnapshots';
-          workerPool.dispose();
-        }
-      });
-
-      promises.push(promise);
-    } else {
+    if (!baseSnapshots.has(file)) {
       // If there is nothing to diff, return a resolved promise and add the file to the new snapshots set
       promises.push(
         new Promise<void>(resolve => {
@@ -297,7 +234,71 @@ export async function diffSnapshots({
           resolve();
         })
       );
+      return;
     }
+
+    const baseHead = path.resolve(basePath, file);
+    const branchHead = path.resolve(currentPath, file);
+
+    let promise;
+
+    // If merge base snapshot exists, do a 3way diff
+    if (mergeBaseSnapshots.has(file)) {
+      promise = workerPool
+        .enqueue({
+          file,
+          branchBase: path.resolve(mergeBasePath, file),
+          baseHead,
+          branchHead,
+          outputDiffPath,
+          outputMergedPath,
+          diffOptions,
+        })
+        .then(onSuccess)
+        .catch(err => {
+          if (terminationReason) {
+            core.debug(
+              `Early termination: diffing ${file} was aborted due to ${terminationReason}`
+            );
+          }
+
+          core.debug(`Error multi diffing: ${file} with ${err.message}`);
+        });
+    } else {
+      promise = workerPool
+        .enqueue({
+          file,
+          outputDiffPath,
+          baseHead,
+          branchHead,
+          diffOptions,
+        })
+        .then(onSuccess)
+        .catch(err => {
+          if (terminationReason) {
+            core.debug(
+              `Early termination: diffing ${file} was aborted due to ${terminationReason}`
+            );
+          }
+
+          core.debug(`Error diffing: ${file} with ${err.message}`);
+        });
+    }
+
+    promise.finally(() => {
+      processedFiles.add(file);
+      missingSnapshots.delete(file);
+
+      // If we have a lot of changed snapshots, there is probably a flake somewhere
+      // and diffing + uploading all of the diffs will take a very long time. We are
+      // likely not interested in all of them and subset will be enough.
+      if (changedSnapshots.size >= maxChangedSnapshots) {
+        terminationReason = 'maxChangedSnapshots';
+        workerPool.dispose();
+      }
+    });
+
+    promises.push(promise);
   });
 
   await Promise.all(promises)

@@ -15,7 +15,7 @@ type DownloadArtifactParams = {
   downloadPath: string;
 };
 
-const FILENAME = 'visual-snapshots-base.zip';
+const FILENAME = 'artifact-download.zip';
 
 async function download(url: string, file: string, dest: string) {
   const transaction = Sentry.getCurrentHub().getScope()?.getTransaction();

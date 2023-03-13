@@ -62,9 +62,9 @@ export async function retrieveBaseSnapshots(
         downloadPath: basePath,
       }),
     {
+      retries: 0,
       onRetry: err => {
-        console.log(workflowRun); // eslint-disable-line no-console
-        console.error(err); // eslint-disable-line no-console
+        console.error('Failed to download workflow artifact: ', err); // eslint-disable-line no-console
       },
     }
   );

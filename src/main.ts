@@ -24,6 +24,8 @@ import {Await} from './types';
 import {getODiffOptionsFromWorkflowInputs} from './getODiffOptionsFromWorkflowInputs';
 import {downloadOtherWorkflowArtifact} from './api/downloadOtherWorkflowArtifact';
 import {SpanStatus} from '@sentry/tracing';
+import {getLatestWorkflowRun} from './api/getLatestWorkflowRun';
+import {getArtifactsFromWorkflowRuns} from './api/getArtifactsFromWorkflowRuns';
 
 // https://sharp.pixelplumbing.com/install#worker-threads
 require('sharp');
@@ -52,11 +54,11 @@ if (process.env.NODE_ENV !== 'test' && os.platform() !== 'linux') {
 
 const parallelism = getParallelismInput();
 const {owner, repo} = github.context.repo;
-const token = core.getInput('github-token');
+const token = core.getInput('github-token') || process.env.ACTION_GITHUB_TOKEN;
 const octokit = token && github.getOctokit(token);
 const {GITHUB_WORKSPACE, GITHUB_WORKFLOW} = process.env;
 const pngGlob = '/**/*.png';
-const shouldSaveOnly = core.getInput('save-only');
+const shouldSaveOnly = core.getInput('save-only') || process.env.ACTION_SAVE_ONLY;
 
 Sentry.init({
   dsn: SENTRY_DSN,
@@ -102,7 +104,8 @@ function getGithubHeadRefInfo(): {headRef: string; headSha: string} {
     pullRequestPayload?.head.sha ||
     workflowRunPullRequest?.head.sha ||
     workflowRunPayload?.head_sha ||
-    github.context.sha;
+    github.context.sha ||
+    process.env.GITHUB_HEAD_SHA;
 
   return {
     headRef:
@@ -110,52 +113,13 @@ function getGithubHeadRefInfo(): {headRef: string; headSha: string} {
       workflowRunPullRequest?.head.ref ||
       (workflowRunPayload?.head_branch &&
         `${workflowRunPayload?.head_repository?.full_name}/${workflowRunPayload?.head_branch}`) ||
-      github.context.ref,
+      github.context.ref ||
+      process.env.GITHUB_HEAD_REF,
     headSha: head_sha,
   };
 }
 
-async function run(): Promise<void> {
-  const resultsRootPath: string = core.getInput('results-path');
-  const baseBranch = core.getInput('base-branch');
-  const artifactName = core.getInput('artifact-name');
-  const gcsBucket = core.getInput('gcs-bucket');
-  const apiToken = core.getInput('api-token');
-  const actionName = core.getInput('action-name');
-  const snapshotPath: string = core.getInput('snapshot-path');
-
-  const resultsPath = path.resolve(resultsRootPath, 'visual-snapshots-results');
-  const basePath = path.resolve('/tmp/visual-snapshots-base');
-  const mergeBasePath = path.resolve('/tmp/visual-snapshop-merge-base');
-
-  const workflowRunPayload = github.context.payload.workflow_run;
-  const pullRequestPayload = github.context.payload.pull_request;
-
-  // We're only interested the first pull request... I'm not sure how there can be multiple
-  // Forks do not have `pull_requests` populated...
-  const workflowRunPullRequest = workflowRunPayload?.pull_requests?.[0];
-
-  const {headRef, headSha} = getGithubHeadRefInfo();
-
-  // TODO: Need a good merge base for forks as neither of the below values will exist (input not included)
-  const mergeBaseSha: string =
-    core.getInput('merge-base') ||
-    pullRequestPayload?.base?.sha ||
-    workflowRunPullRequest?.base.sha ||
-    github.context.payload.before;
-
-  // Forward `results-path` to outputs
-  core.startGroup('Set outputs');
-  core.setOutput('results-path', resultsRootPath);
-  core.setOutput('base-images-path', basePath);
-  core.setOutput('merge-base-images-path', mergeBasePath);
-  core.endGroup();
-
-  core.startGroup('github context');
-  core.debug(`merge base: ${mergeBaseSha}`);
-  core.debug(JSON.stringify(github.context, null, 2));
-  core.endGroup();
-
+async function attemptSaveSnapshot(snapshotPath: string, artifactName: string) {
   try {
     if (snapshotPath) {
       await saveSnapshots({
@@ -164,241 +128,123 @@ async function run(): Promise<void> {
       });
     }
   } catch (error) {
-    handleError(error);
-  } finally {
-    // Only needs to upload snapshots, do not proceed further
-    if (shouldSaveOnly !== 'false') {
-      return;
-    }
+    console.log('Failed to save snapshot: ', error);
+    handleError(error as Error);
   }
+}
 
-  if (!octokit) {
-    const error = new Error('`github-token` missing');
-    handleError(error);
-    throw error;
-  }
+async function compareArtifacts(baseArtifactName: string, basePath: string, mergeArtifactName: string, mergeBasePath: string, workflowRunPayload: any, mergeBaseSha:any, octokit: any, diffOptions: any, resultsPath: string) {
+  console.log(`Comparing '${baseArtifactName}' and '${mergeArtifactName}'`);
 
-  // This is intended to only work with pull requests, we should ignore `workflow_run` from pushes
-  if (workflowRunPayload?.event === 'push') {
-    core.debug(
-      'Push event triggered `workflow_run`... skipping as this only works for PRs'
-    );
+  const workflowRuns = await getLatestWorkflowRun(octokit, {
+    owner,
+    repo,
+    workflow_id: `${workflowRunPayload?.name || GITHUB_WORKFLOW}.yml`,
+    commit: mergeBaseSha as string,
+  });
+  if (!workflowRuns) {
+    core.error(`Failed to find workflow runs.`);
     return;
   }
 
-  const buildId = await startBuild({
-    octokit,
+  const artifacts = await getArtifactsFromWorkflowRuns(octokit, {
     owner,
     repo,
-    token: apiToken,
-    headSha,
-    headRef,
-    name: actionName,
+    workflowRuns,
+    artifactNames: [baseArtifactName, mergeArtifactName],
   });
 
-  const transaction = Sentry.getCurrentHub().getScope()?.getTransaction();
-  try {
-    const [
-      didDownloadLatest,
-      didDownloadMergeBase,
-    ] = await retrieveBaseSnapshots(octokit, {
-      owner,
-      repo,
-      branch: baseBranch,
-      workflow_id: `${workflowRunPayload?.name || GITHUB_WORKFLOW}.yml`,
-      artifactName,
-      basePath,
-      mergeBasePath,
-      mergeBaseSha,
-    });
-
-    if (!didDownloadLatest) {
-      // It's possible there are no base snapshots e.g. if these are all
-      // new snapshots.
-      core.warning('Unable to download artifact from base branch');
-    }
-
-    if (!didDownloadMergeBase) {
-      // We can still diff against base
-      core.debug('Unable to download artifact from merge base sha');
-    }
-
-    let downloadResp: Await<ReturnType<typeof downloadSnapshots>> | null = null;
-
-    // TODO maybe make this more explicit, but if snapshot path is not defined
-    // we assume we need to fetch it from artifacts from this workflow
-    if (!snapshotPath) {
-      core.debug('Downloading current snapshots');
-
-      const rootDirectory = '/tmp/visual-snapshots';
-
-      if (github.context.eventName === 'workflow_run') {
-        // TODO: fail the build if workflow_run.conclusion != 'success'
-        // If this is called from a `workflow_run` event, then assume that the artifacts exist from that workflow run
-        // TODO: I'm not sure what happens if there are multiple workflows defined (I assume it would get called multiple times?)
-        const {data} = await octokit.rest.actions.listWorkflowRunArtifacts({
-          owner,
-          repo,
-          run_id: workflowRunPayload?.id,
-        });
-
-        const artifact = data.artifacts.find(({name}) => name === artifactName);
-
-        if (!artifact) {
-          throw new Error(
-            `Unable to find artifact from ${workflowRunPayload?.html_url}`
-          );
-        }
-
-        downloadResp = await downloadOtherWorkflowArtifact(octokit, {
-          owner,
-          repo,
-          artifactId: artifact.id,
-          downloadPath: `${rootDirectory}/visual-snapshots`,
-        });
-      } else {
-        downloadResp = await downloadSnapshots({
-          artifactName,
-          rootDirectory,
-        });
-      }
-    }
-
-    const current = snapshotPath || downloadResp?.downloadPath;
-
-    if (!current) {
-      const err = new Error(
-        !snapshotPath
-          ? '`snapshot-path` input not configured'
-          : 'Unable to download current snapshots'
-      );
-      core.error(err);
-      throw err;
-    }
-
-    const currentPath = path.resolve(GITHUB_WORKSPACE, current || '');
-
-    core.startGroup('Starting diff of snapshots...');
-
-    // Get odiff options from workflow inputs
-    const diffOptions = getODiffOptionsFromWorkflowInputs();
-
-    await io.mkdirP(resultsPath);
-
-    const {
-      baseFiles,
-      changedSnapshots,
-      missingSnapshots,
-      newSnapshots,
-      terminationReason,
-    } = await diffSnapshots({
-      basePath,
-      mergeBasePath,
-      currentPath,
-      outputPath: resultsPath,
-      diffOptions,
-      parallelism,
-    });
-
-    const resultsGlobber = await glob.create(`${resultsPath}${pngGlob}`, {
-      followSymbolicLinks: false,
-    });
-    const resultsFiles = await resultsGlobber.glob();
-
-    const gcsSpan = transaction?.startChild({
-      op: 'upload',
-      description: 'Upload to GCS',
-    });
-    const gcsDestination = `${owner}/${repo}/${artifactName}/${headSha}`;
-    const resultsArtifactUrls = await uploadToGcs({
-      files: resultsFiles,
-      root: resultsPath,
-      bucket: gcsBucket,
-      destinationRoot: `${gcsDestination}/results`,
-    });
-    gcsSpan?.finish();
-    const results: BuildResults = {
-      terminationReason,
-      baseFilesLength: baseFiles.length,
-      changed: [...changedSnapshots],
-      missing: [...missingSnapshots],
-      added: [...newSnapshots],
-    };
-    // This allows using Discover to distinguish transactions that require approval
-    const {changed, missing} = results;
-    if (changed.length + missing.length > 0) {
-      transaction?.setTag('snapshots.approvalRequired', 'true');
-    } else {
-      transaction?.setTag('snapshots.approvalRequired', 'false');
-    }
-    core.info(`Results: ${JSON.stringify(results, null, 2)}`);
-    core.endGroup();
-
-    core.startGroup('Generating image gallery...');
-    await generateImageGallery(
-      path.resolve(resultsPath, 'index.html'),
-      results
-    );
-
-    const storage = getStorageClient();
-    const [imageGalleryFile] = storage
-      ? await storage
-          .bucket(gcsBucket)
-          .upload(path.resolve(resultsPath, 'index.html'), {
-            destination: `${gcsDestination}/index.html`,
-            gzip: true,
-            metadata: {
-              cacheControl: 'public, max-age=31536000',
-            },
-          })
-      : [];
-
-    const galleryUrl =
-      imageGalleryFile &&
-      `https://storage.googleapis.com/${gcsBucket}/${imageGalleryFile.name}`;
-    core.endGroup();
-
-    const finishSpan = transaction?.startChild({
-      op: 'finishing',
-      description: 'Save snapshots and finish build',
-    });
-    core.debug('Saving snapshots and finishing build...');
-    await Promise.all([
-      saveSnapshots({
-        artifactName: `${artifactName}-results`,
-        rootDirectory: resultsRootPath,
-      }),
-
-      finishBuild({
-        octokit,
-        id: buildId,
-        owner,
-        repo,
-        token: apiToken,
-        galleryUrl,
-        images: resultsArtifactUrls,
-        headSha,
-        results,
-      }),
-    ]);
-    finishSpan?.finish();
-    // Setting the status correctly helps to distinguish transactions
-    // that have failed rather than not
-    transaction?.setStatus(SpanStatus.Ok);
-  } catch (error) {
-    core.debug('Top level error handling.');
-    // This helps making this transaction count towards the failure rate
-    transaction?.setStatus(SpanStatus.InternalError);
-    handleError(error);
-    failBuild({
-      octokit,
-      id: buildId,
-      owner,
-      repo,
-      headSha,
-      token: apiToken,
-    });
+  if (!artifacts[baseArtifactName]) {
+    core.error(`Failed to find ${baseArtifactName}`);
+    return;
   }
+  if (!artifacts[mergeArtifactName]) {
+    core.error(`Failed to find ${mergeArtifactName}`);
+    return;
+  }
+
+  core.debug(`Downloading artifact ${baseArtifactName}...`);
+  await downloadOtherWorkflowArtifact(octokit, {
+    owner,
+    repo,
+    artifactId: artifacts[baseArtifactName].id,
+    downloadPath: basePath,
+  });
+
+  core.debug(`Downloading artifact ${mergeArtifactName}...`);
+  await downloadOtherWorkflowArtifact(octokit, {
+    owner,
+    repo,
+    artifactId: artifacts[mergeArtifactName].id,
+    downloadPath: mergeBasePath,
+  });
+
+  const {
+    baseFiles,
+    changedSnapshots,
+    missingSnapshots,
+    newSnapshots,
+    terminationReason,
+  } = await diffSnapshots({
+    basePath,
+    mergeBasePath,
+    currentPath: mergeBasePath,
+    outputPath: resultsPath,
+    diffOptions,
+    parallelism,
+  });
+}
+
+async function run(): Promise<void> {
+  const snapshotPath: string = core.getInput('snapshot-path');
+  const artifactName = process.env.ACTION_ARTIFACT_NAME ||
+    core.getInput('artifact-name');
+  await attemptSaveSnapshot(snapshotPath, artifactName);
+  if (shouldSaveOnly !== 'false') {
+    return;
+  }
+
+  const resultsRootPath: string = core.getInput('results-path');
+  const resultsPath = path.resolve(resultsRootPath, 'visual-snapshots-results');
+  const basePath = path.resolve('/tmp/visual-snapshots-base');
+  const mergeBasePath = path.resolve('/tmp/visual-snapshots-merge-base');
+
+  const workflowRunPayload = github.context.payload.workflow_run;
+  const pullRequestPayload = github.context.payload.pull_request;
+  // We're only interested the first pull request... I'm not sure how there can be multiple
+  // Forks do not have `pull_requests` populated...
+  const workflowRunPullRequest = workflowRunPayload?.pull_requests?.[0];
+
+  // TODO: Need a good merge base for forks as neither of the below values will exist (input not included)
+  const mergeBaseSha: string =
+    core.getInput('merge-base') ||
+    pullRequestPayload?.base?.sha ||
+    workflowRunPullRequest?.base.sha ||
+    github.context.payload.before;
+
+  // Get odiff options from workflow inputs
+  const diffOptions = getODiffOptionsFromWorkflowInputs();
+  await io.mkdirP(resultsPath);
+
+  // NOTE: This is a bit of a cheat to introduce a new behavior without risk
+  // of breaking previous behavior.
+  const baseArtifactName = process.env.ACTION_BASE_ARTIFACT || core.getInput('base-artifact');
+  const mergeArtifactName = process.env.ACTION_MERGE_ARTIFACT || core.getInput('merge-artifact');
+  if (baseArtifactName && mergeArtifactName) {
+    await compareArtifacts(
+      baseArtifactName,
+      basePath,
+      mergeArtifactName,
+      mergeBasePath,
+      workflowRunPayload,
+      mergeBaseSha,
+      octokit,
+      diffOptions,
+      resultsPath);
+    return;
+  }
+
+  throw new Error('Injected by Matt.');
 }
 
 const {headRef, headSha} = getGithubHeadRefInfo();
