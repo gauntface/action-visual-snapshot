@@ -83,7 +83,7 @@ export async function getArtifactsForBranchAndWorkflow(
 
   // Search through workflow artifacts until we find a workflow run w/ artifact name that we are looking for
   for (const workflowRun of completedWorkflowRuns) {
-    core.debug(`Checking artifacts for workflow run: ${workflowRun.html_url}`);
+    core.info(`Checking artifacts for workflow run: ${workflowRun.html_url}`);
 
     const {
       data: {artifacts},
@@ -94,7 +94,7 @@ export async function getArtifactsForBranchAndWorkflow(
     });
 
     if (!artifacts) {
-      core.debug(
+      core.info(
         `Unable to fetch artifacts for branch: ${branch}, workflow: ${workflow_id}, workflowRunId: ${workflowRun.id}`
       );
     } else {

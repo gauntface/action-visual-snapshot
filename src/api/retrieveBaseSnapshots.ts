@@ -80,7 +80,7 @@ export async function retrieveBaseSnapshots(
 ${JSON.stringify(workflowRun, null, 2)}`);
   core.endGroup();
 
-  if (mergeBaseSha && workflowRun.head_sha !== mergeBaseSha) {
+  if (workflowRun.head_sha !== mergeBaseSha) {
     mergeBaseArtifacts = await getArtifactsForBranchAndWorkflow(octokit, {
       owner,
       repo,
