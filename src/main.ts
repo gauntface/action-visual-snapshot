@@ -213,11 +213,14 @@ async function run(): Promise<void> {
       owner,
       repo,
       branch: baseBranch,
-      workflow_id: `${workflowRunPayload?.name || GITHUB_WORKFLOW}.yml`,
+      workflow_id: baseArtifactName
+        ? `${github.context.runId}`
+        : `${workflowRunPayload?.name || GITHUB_WORKFLOW}.yml`,
       artifactName: baseArtifactName || artifactName,
       basePath,
       mergeBasePath,
       mergeBaseSha,
+      useCurrentWorkflow: baseArtifactName ? true : false,
     });
 
     if (!didDownloadLatest) {

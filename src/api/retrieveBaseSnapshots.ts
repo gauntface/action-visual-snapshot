@@ -18,6 +18,7 @@ type RetrieveBaseSnapshotsParams = {
   basePath: string;
   mergeBasePath: string;
   mergeBaseSha: string;
+  useCurrentWorkflow?: boolean;
 } & GetArtifactsForBranchAndWorkflow;
 
 // We should make sure that merge base is different from base
@@ -32,6 +33,7 @@ export async function retrieveBaseSnapshots(
     basePath,
     mergeBasePath,
     mergeBaseSha,
+    useCurrentWorkflow = false,
   }: RetrieveBaseSnapshotsParams
 ) {
   const baseArtifacts = await getArtifactsForBranchAndWorkflow(octokit, {
@@ -40,6 +42,7 @@ export async function retrieveBaseSnapshots(
     workflow_id,
     branch,
     artifactName,
+    useCurrentWorkflow,
   });
 
   if (!baseArtifacts) {
