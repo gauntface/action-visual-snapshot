@@ -218,7 +218,7 @@ async function run(): Promise<void> {
       basePath,
       mergeBasePath,
       mergeBaseSha,
-      useCurrentWorkflow: baseArtifactName ? false : true,
+      status: baseArtifactName ? undefined : 'success',
     });
 
     if (!didDownloadLatest) {

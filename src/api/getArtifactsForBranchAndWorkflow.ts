@@ -22,7 +22,7 @@ export type GetArtifactsForBranchAndWorkflow = {
   workflow_id: string;
   artifactName: string;
   commit?: string;
-  useCurrentWorkflow?: boolean;
+  status?: 'success' | undefined;
 };
 
 /**
@@ -40,7 +40,7 @@ export async function getArtifactsForBranchAndWorkflow(
     branch,
     commit,
     artifactName,
-    useCurrentWorkflow = false,
+    status = 'success',
   }: GetArtifactsForBranchAndWorkflow
 ): Promise<GetArtifactsForBranchAndWorkflowReturn> {
   core.startGroup(
@@ -48,21 +48,6 @@ export async function getArtifactsForBranchAndWorkflow(
       commit ? `,  commit:"${commit}"` : ''
     }`
   );
-
-  console.log('\n\n', {
-    owner,
-    repo,
-    // Below is typed incorrectly, it needs to be a string but typed as number
-    workflow_id,
-    branch,
-
-    // If we are using the current workflow it may not have finished.
-    ...(useCurrentWorkflow ? {status: 'success'} : {}),
-
-    // GitHub API treats `head_sha` with explicit `undefined` value differently
-    // than when `head_sha` does not exist in object. Want the latter.
-    ...(commit ? {head_sha: commit} : {}),
-  });
 
   const {
     data: {workflow_runs: workflowRuns},
@@ -74,7 +59,7 @@ export async function getArtifactsForBranchAndWorkflow(
     branch,
 
     // If we are using the current workflow it may not have finished.
-    ...(useCurrentWorkflow ? {status: 'success'} : {}),
+    ...(status ? {status} : {}),
 
     // GitHub API treats `head_sha` with explicit `undefined` value differently
     // than when `head_sha` does not exist in object. Want the latter.
