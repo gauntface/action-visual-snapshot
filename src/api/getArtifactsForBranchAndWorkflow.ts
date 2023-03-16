@@ -49,6 +49,21 @@ export async function getArtifactsForBranchAndWorkflow(
     }`
   );
 
+  console.log('\n\n', {
+    owner,
+    repo,
+    // Below is typed incorrectly, it needs to be a string but typed as number
+    workflow_id,
+    branch,
+
+    // If we are using the current workflow it may not have finished.
+    ...(useCurrentWorkflow ? {status: 'success'} : {}),
+
+    // GitHub API treats `head_sha` with explicit `undefined` value differently
+    // than when `head_sha` does not exist in object. Want the latter.
+    ...(commit ? {head_sha: commit} : {}),
+  });
+
   const {
     data: {workflow_runs: workflowRuns},
   } = await octokit.rest.actions.listWorkflowRuns({

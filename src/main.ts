@@ -213,14 +213,12 @@ async function run(): Promise<void> {
       owner,
       repo,
       branch: baseBranch,
-      workflow_id: baseArtifactName
-        ? `${github.context.runId}`
-        : `${workflowRunPayload?.name || GITHUB_WORKFLOW}.yml`,
+      workflow_id: `${workflowRunPayload?.name || GITHUB_WORKFLOW}.yml`,
       artifactName: baseArtifactName || artifactName,
       basePath,
       mergeBasePath,
       mergeBaseSha,
-      useCurrentWorkflow: baseArtifactName ? true : false,
+      useCurrentWorkflow: baseArtifactName ? false : true,
     });
 
     if (!didDownloadLatest) {
@@ -398,6 +396,7 @@ async function run(): Promise<void> {
     transaction?.setStatus(SpanStatus.Ok);
   } catch (error) {
     core.debug('Top level error handling.');
+    console.log(`\n\n${error}\n\n}`);
     // This helps making this transaction count towards the failure rate
     transaction?.setStatus(SpanStatus.InternalError);
     handleError(error);
